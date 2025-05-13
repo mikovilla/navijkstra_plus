@@ -1,0 +1,169 @@
+﻿@page "/"
+@using np.Application
+@using np.Domain
+@using np.Service
+@using np.Utility
+@inject IJSRuntime JSRuntime
+
+<PageTitle>Home</PageTitle>
+
+<h3>Navigation Service</h3>
+<p>@StatusMessage</p>
+<div id="map" style="height: 800px; margin-top: 20px;"></div>
+<div>
+    <div style="float: left; width: 49%">
+        <table class="table">
+            <tr>
+                <td>
+                    Source
+                </td>
+                <td>
+                    Destination
+                </td>
+            </tr>
+            <tr>
+                <td>
+                    <input type="text" class="form-control" @bind="StartAddress"/>
+                </td>
+                <td>
+                    <input type="text" class="form-control" @bind="DestinationAddress"/>
+                </td>
+            </tr>
+            <tr>
+                <td colspan="2">
+                    <button class="form-control" @onclick="GetAddresses">GetAddresses</button>
+                </td>
+            </tr>
+            <tr>
+                <td>
+                    <select @bind="StartNode" class="form-control">
+                        @foreach(var startOption in StartOptions){
+                            <option value="@startOption.longlatValue">@startOption.name</option>
+                        }
+                    </select>
+                </td>
+                <td>
+                    <select @bind="DestinationNode" class="form-control">
+                        @foreach(var destinationOption in DestinationOptions){
+                            <option value="@destinationOption.longlatValue">@destinationOption.name</option>
+                        }
+                    </select>
+                </td>
+            </tr>
+            <tr>
+                <td colspan="2">
+                    <button class="form-control" @onclick="CalculateShortestPath">Find Path</button>
+                </td>
+            </tr>
+        </table>
+    </div>
+    <div style="float: left;">
+        @if(Segment != null){
+            <table class="table">
+                <tr>
+                    <td>Duration</td>
+                    <td colspan="2">@Segment.Duration</td>
+                </tr>
+                <tr>
+                    <td>Distance</td>
+                    <td colspan="2">@Segment.Distance</td>
+                </tr>
+                <tr>
+                    <td>Instruction</td>
+                    <td>Duration</td>
+                    <td>Distance</td>
+                </tr>
+                @foreach(var step in Segment.GetSteps()){
+                    <tr>
+                        <td>@step.Instruction</td>
+                        <td>@step.Duration</td>
+                        <td>@step.Distance</td>
+                    </tr>
+                }
+            </table>
+        }
+    </div>
+</div>
+
+@code {
+    private string StartAddress { get; set; } = string.Empty;
+    private string DestinationAddress { get; set; } = string.Empty;
+    private List<(string longlatValue, string name)> StartOptions = new List<(string longlatValue, string name)> { (string.Empty, string.Empty) };
+    private List<(string longlatValue, string name)> DestinationOptions = new List<(string longlatValue, string name)> { (string.Empty, string.Empty) };
+
+    private string StartNode { get; set; } = string.Empty;
+    private string DestinationNode { get; set; } = string.Empty;
+    private string StatusMessage { get; set; } = string.Empty;
+    private Segment Segment { get; set; } = null;
+
+    private readonly string GeoCodeApiKey = string.Empty;
+    private readonly string OpenRouteServiceApiKey = string.Empty;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            // Initialize the map at a default location
+            await JSRuntime.InvokeVoidAsync("initializeMap", 0, 0);
+        }
+    }
+
+    private async Task GetAddresses(){
+        if(!string.IsNullOrEmpty(StartAddress) && !string.IsNullOrEmpty(DestinationAddress)){
+            var startCoordinates = await GeoCodeService.Call(StartAddress, GeoCodeApiKey);
+            var destinationCoordinates = await GeoCodeService.Call(DestinationAddress, GeoCodeApiKey);
+            StartOptions = startCoordinates.Select(s => ($"{s.Longitude},{s.Latitude}", s.DisplayName)).ToList();
+            DestinationOptions = destinationCoordinates.Select(d => ($"{d.Longitude},{d.Latitude}", d.DisplayName)).ToList();
+            StartNode = StartOptions.First().name;
+            DestinationNode = DestinationOptions.First().name;
+        }
+    }
+
+    private async Task CalculateShortestPath()
+    {
+        if(!string.IsNullOrEmpty(StartNode) && !string.IsNullOrEmpty(DestinationNode)){
+            // Test data
+            // Dictionary<string, Dictionary<string, int>> Graph = OpenRouteServiceExtensions.GetSampleGraph().Graph;
+            // IEnumerable<double>[] Coordinates = OpenRouteServiceExtensions.GetSampleGraph().Coordinates;
+            StatusMessage = $"{StartNode} -> {DestinationNode}";
+            var orsResult = await OpenRouteService.Call(
+                StartNode, 
+                DestinationNode, 
+                OpenRouteServiceApiKey);
+
+            Dictionary<string, Dictionary<string, int>> Graph = orsResult.GetSegment().GetSteps().GetGraph();
+            var Coordinates = orsResult.GetCoordinates().Select(c => c.Reverse()).ToArray();
+            Segment = orsResult.GetSegment();
+
+            // Compute the shortest path using the GetShortestPath logic
+            var path = NavigationService.GetShortestPath(Graph, Graph.First().Key, Graph.Last().Key);
+
+            if (path != null)
+            {
+                var locations = path.Select(node => node switch
+                {
+                    "-" => "Destination",
+                    _ => node
+                });
+
+                // StatusMessage = $"Shortest Path: {string.Join(" -> ", locations)}";
+                var coordinates = new List<List<double>>();
+                var cumulativeWayPoints = 0;
+
+                foreach(var g in Graph)
+                {
+
+                    cumulativeWayPoints += g.Value.FirstOrDefault().Value;
+                    coordinates.Add(Coordinates[cumulativeWayPoints].ToList());
+                }
+
+                // Pass the coordinates to the JS map
+                await JSRuntime.InvokeVoidAsync("drawPath", System.Text.Json.JsonSerializer.Serialize(coordinates));
+            }
+            else
+            {
+                StatusMessage = "Path not found.";
+            }
+        }
+    }
+}
